@@ -1,0 +1,510 @@
+﻿{% extends "detector/base.html" %}
+
+{% block title %}Dashboard | VisionQQ{% endblock %}
+{% block extra_head %}
+<script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<section>
+    <h1 style="margin:0 0 8px;">Deteccao em Tempo Real</h1>
+    <p class="muted" style="margin:0 0 18px;">Escolha modelo, ajuste parametros e controle a performance pela interface.</p>
+
+    <div class="card" style="margin-bottom:14px;">
+        <h3 style="margin-top:0;">Fonte de Video</h3>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+            <select id="cameraSelect" style="background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;"></select>
+            <input id="rtspInput" type="text" placeholder="rtsp://usuario:senha@ip:porta/stream" style="min-width:360px; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            <button id="applySource" class="btn" type="button">Selecionar Fonte</button>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+        <h3 style="margin-top:0;">Ajustes de Modelo e Performance</h3>
+        <div style="display:grid; grid-template-columns:repeat(4, minmax(170px, 1fr)); gap:10px;">
+            <div>
+                <label class="muted">Provider</label>
+                <select id="modelProvider" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+                    <option value="ultralytics">Ultralytics</option>
+                    <option value="huggingface">Hugging Face</option>
+                </select>
+            </div>
+            <div>
+                <label class="muted">Modelo Ultralytics</label>
+                <input id="modelSource" type="text" value="yolov8n.pt" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">HF Repo ID</label>
+                <input id="hfRepoId" type="text" placeholder="user/repo" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">HF Filename (.pt)</label>
+                <input id="hfFilename" type="text" placeholder="model.pt (opcional)" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div style="grid-column: span 3;">
+                <label class="muted">Busca de modelos HF (deteccao)</label>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <input id="hfQueryInput" type="text" value="yolo vehicle detection" style="min-width:260px; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+                    <button id="searchHfModels" class="btn" type="button">Buscar HF</button>
+                    <select id="hfModelSelect" style="min-width:420px; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;"></select>
+                    <button id="useHfSelected" class="btn" type="button">Usar Selecionado</button>
+                </div>
+            </div>
+            <div style="display:flex; align-items:flex-end;">
+                <span id="hfStatus" class="muted">Busque modelos para preencher automaticamente o repo.</span>
+            </div>
+
+            <div>
+                <label class="muted">Confidence</label>
+                <input id="confInput" type="number" min="0.01" max="0.99" step="0.01" value="0.35" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">IoU</label>
+                <input id="iouInput" type="number" min="0.01" max="0.99" step="0.01" value="0.50" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">Image Size</label>
+                <input id="imgszInput" type="number" min="320" max="1280" step="32" value="640" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">Stable Frames</label>
+                <input id="stableFramesInput" type="number" min="1" max="30" step="1" value="5" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+
+            <div style="grid-column: span 2;">
+                <label class="muted">Filtro de classes (csv)</label>
+                <input id="classFilterInput" type="text" placeholder="car,truck,bus,motorcycle" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">FPS Camera (tentativa)</label>
+                <input id="cameraFpsInput" type="number" min="1" max="60" step="1" value="30" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">FPS Render (JS)</label>
+                <input id="clientFpsInput" type="number" min="1" max="60" step="1" value="12" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+
+            <div>
+                <label class="muted">Largura Camera</label>
+                <input id="cameraWidthInput" type="number" min="320" max="1920" step="1" value="1280" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">Altura Camera</label>
+                <input id="cameraHeightInput" type="number" min="240" max="1080" step="1" value="720" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">Zoom (1.0 a 8.0)</label>
+                <input id="zoomScaleInput" type="number" min="1" max="8" step="0.1" value="1.0" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">Centro X do Zoom (0-100%)</label>
+                <input id="zoomCenterXInput" type="number" min="0" max="100" step="1" value="50" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">Centro Y do Zoom (0-100%)</label>
+                <input id="zoomCenterYInput" type="number" min="0" max="100" step="1" value="50" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div style="display:flex; flex-direction:column; justify-content:flex-end; gap:8px;">
+                <label class="muted"><input id="zoomEnabledInput" type="checkbox"> Ativar zoom de imagem</label>
+                <label class="muted"><input id="detectZoomOnlyInput" type="checkbox" checked> Detectar so na area do zoom</label>
+            </div>
+            <div style="display:flex; align-items:flex-end; gap:10px; grid-column: span 2;">
+                <button id="applyModelConfig" class="btn" type="button">Aplicar Config</button>
+                <button id="vehiclePreset" class="btn" type="button">Preset Veiculos</button>
+            </div>
+        </div>
+        <div id="modelStatus" class="muted" style="margin-top:10px;">Ajuste os parametros e clique em Aplicar Config.</div>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+        <h3 style="margin-top:0;">Linha de Contagem</h3>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <select id="lineOrientation" style="background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+                <option value="horizontal">Linha Horizontal</option>
+                <option value="vertical">Linha Vertical</option>
+            </select>
+            <input id="linePosition" type="range" min="5" max="95" value="50" style="width:220px;">
+            <span id="linePositionLabel" class="muted">50%</span>
+            <button id="applyLineConfig" class="btn" type="button">Aplicar Linha</button>
+        </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns:2fr 1fr; gap:20px; align-items:start;">
+        <article class="card">
+            <canvas id="liveCanvas" style="width:100%; min-height:360px; border-radius:10px; border:1px solid #2a466f; background:#101a29;"></canvas>
+            <div id="streamStatus" class="muted" style="margin-top:8px;">Conectando ao stream...</div>
+        </article>
+        <aside class="card">
+            <h3 style="margin-top:0;">Contadores por Classe</h3>
+            <div id="dynamicCounters" style="display:grid; gap:10px;"></div>
+        </aside>
+    </div>
+</section>
+
+<script>
+    let streamDelayMs = 90;
+
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) {
+            return parts.pop().split(';').shift();
+        }
+        return "";
+    }
+
+    function toStr(value, fallback = "") {
+        if (value === undefined || value === null) return fallback;
+        return String(value);
+    }
+
+    function updateStreamDelayFromConfig(config) {
+        const fps = Number(config?.client_fps ?? 12);
+        const safe = Math.max(1, Math.min(60, fps));
+        streamDelayMs = Math.max(16, Math.floor(1000 / safe));
+    }
+
+    function renderHfModels(models) {
+        const select = document.getElementById("hfModelSelect");
+        select.innerHTML = "";
+        const entries = Array.isArray(models) ? models : [];
+
+        if (entries.length === 0) {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "Nenhum modelo encontrado";
+            select.appendChild(opt);
+            return;
+        }
+
+        for (const item of entries) {
+            const repoId = toStr(item.repo_id, "");
+            const filename = toStr(item.filename, "");
+            const label = toStr(item.label, repoId || "modelo");
+            const opt = document.createElement("option");
+            opt.value = `${repoId}||${filename}`;
+            opt.textContent = filename ? `${label} [${filename}]` : label;
+            select.appendChild(opt);
+        }
+    }
+
+    async function searchHfModels() {
+        const status = document.getElementById("hfStatus");
+        const q = document.getElementById("hfQueryInput").value.trim() || "yolo";
+        status.textContent = "Buscando modelos no Hugging Face...";
+
+        try {
+            const response = await fetch(`/api/hf-models/?q=${encodeURIComponent(q)}&limit=20`);
+            const data = await response.json();
+            renderHfModels(data.models || []);
+            if (data.warning) {
+                status.textContent = data.warning;
+            } else {
+                status.textContent = `Modelos carregados para "${q}".`;
+            }
+        } catch (error) {
+            status.textContent = "Falha ao consultar modelos. Verifique rede e dependencias.";
+        }
+    }
+
+    function useSelectedHfModel() {
+        const value = document.getElementById("hfModelSelect").value || "";
+        if (!value.includes("||")) {
+            return;
+        }
+        const [repoId, filename] = value.split("||");
+        document.getElementById("modelProvider").value = "huggingface";
+        document.getElementById("hfRepoId").value = repoId || "";
+        document.getElementById("hfFilename").value = filename || "";
+        document.getElementById("modelStatus").textContent = "Modelo HF selecionado. Clique em Aplicar Config.";
+    }
+
+    async function loadSources() {
+        try {
+            const response = await fetch("/api/sources/");
+            const data = await response.json();
+            const select = document.getElementById("cameraSelect");
+            select.innerHTML = "";
+
+            for (const source of data.sources) {
+                const opt = document.createElement("option");
+                opt.value = source.value;
+                opt.textContent = source.label;
+                select.appendChild(opt);
+            }
+
+            const current = String(data.current_source ?? "cam:0:any");
+            if ([...select.options].some(o => o.value === current)) {
+                select.value = current;
+            }
+            if (current.startsWith("rtsp://")) {
+                document.getElementById("rtspInput").value = current;
+            }
+        } catch (error) {
+            console.error("Falha ao listar fontes:", error);
+        }
+    }
+
+    async function applySelectedSource() {
+        const select = document.getElementById("cameraSelect");
+        const rtspValue = document.getElementById("rtspInput").value.trim();
+        let source = select.value;
+
+        if (source.startsWith("rtsp://") && rtspValue) {
+            source = rtspValue;
+        }
+
+        const body = new URLSearchParams({ source });
+        const response = await fetch("/api/select-source/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-CSRFToken": getCookie("csrftoken"),
+            },
+            body,
+        });
+
+        if (!response.ok) {
+            let message = "Nao foi possivel trocar a fonte de video.";
+            try {
+                const payload = await response.json();
+                if (payload.error) {
+                    message = payload.error;
+                }
+            } catch (error) {
+                console.error("Falha ao ler erro de troca de fonte:", error);
+            }
+            alert(message);
+            return;
+        }
+
+        await loadSources();
+    }
+
+    async function loadModelConfig() {
+        try {
+            const response = await fetch("/api/model-config/");
+            const data = await response.json();
+
+            document.getElementById("modelProvider").value = toStr(data.model_provider, "ultralytics");
+            document.getElementById("modelSource").value = toStr(data.model_source, "yolov8n.pt");
+            document.getElementById("hfRepoId").value = toStr(data.hf_repo_id, "");
+            document.getElementById("hfFilename").value = toStr(data.hf_filename, "");
+            document.getElementById("confInput").value = toStr(data.confidence, "0.35");
+            document.getElementById("iouInput").value = toStr(data.iou, "0.5");
+            document.getElementById("imgszInput").value = toStr(data.imgsz, "640");
+            document.getElementById("stableFramesInput").value = toStr(data.stable_frames, "5");
+            document.getElementById("classFilterInput").value = toStr(data.class_filter, "");
+            document.getElementById("cameraFpsInput").value = toStr(data.camera_fps, "30");
+            document.getElementById("clientFpsInput").value = toStr(data.client_fps, "12");
+            document.getElementById("cameraWidthInput").value = toStr(data.camera_width, "1280");
+            document.getElementById("cameraHeightInput").value = toStr(data.camera_height, "720");
+            document.getElementById("zoomEnabledInput").checked = Boolean(data.zoom_enabled);
+            document.getElementById("detectZoomOnlyInput").checked = Boolean(data.detect_zoom_only ?? true);
+            document.getElementById("zoomScaleInput").value = toStr(data.zoom_scale, "1.0");
+            document.getElementById("zoomCenterXInput").value = toStr(Math.round((Number(data.zoom_center_x ?? 0.5)) * 100), "50");
+            document.getElementById("zoomCenterYInput").value = toStr(Math.round((Number(data.zoom_center_y ?? 0.5)) * 100), "50");
+
+            updateStreamDelayFromConfig(data);
+        } catch (error) {
+            console.error("Falha ao carregar config de modelo:", error);
+        }
+    }
+
+    async function applyModelConfig(extra = {}) {
+        const payload = {
+            model_provider: document.getElementById("modelProvider").value,
+            model_source: document.getElementById("modelSource").value.trim(),
+            hf_repo_id: document.getElementById("hfRepoId").value.trim(),
+            hf_filename: document.getElementById("hfFilename").value.trim(),
+            confidence: document.getElementById("confInput").value,
+            iou: document.getElementById("iouInput").value,
+            imgsz: document.getElementById("imgszInput").value,
+            stable_frames: document.getElementById("stableFramesInput").value,
+            class_filter: document.getElementById("classFilterInput").value.trim(),
+            camera_fps: document.getElementById("cameraFpsInput").value,
+            client_fps: document.getElementById("clientFpsInput").value,
+            camera_width: document.getElementById("cameraWidthInput").value,
+            camera_height: document.getElementById("cameraHeightInput").value,
+            zoom_enabled: document.getElementById("zoomEnabledInput").checked ? "true" : "false",
+            detect_zoom_only: document.getElementById("detectZoomOnlyInput").checked ? "true" : "false",
+            zoom_scale: document.getElementById("zoomScaleInput").value,
+            zoom_center_x: (Number(document.getElementById("zoomCenterXInput").value || 50) / 100).toString(),
+            zoom_center_y: (Number(document.getElementById("zoomCenterYInput").value || 50) / 100).toString(),
+            ...extra,
+        };
+
+        const body = new URLSearchParams(payload);
+        const statusEl = document.getElementById("modelStatus");
+        statusEl.textContent = "Aplicando configuracao...";
+
+        const response = await fetch("/api/set-model-config/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-CSRFToken": getCookie("csrftoken"),
+            },
+            body,
+        });
+
+        if (!response.ok) {
+            let message = "Nao foi possivel aplicar configuracao.";
+            try {
+                const payloadErr = await response.json();
+                if (payloadErr.error) {
+                    message = payloadErr.error;
+                }
+            } catch (error) {
+                console.error("Falha ao ler erro da configuracao:", error);
+            }
+            statusEl.textContent = message;
+            return;
+        }
+
+        const data = await response.json();
+        updateStreamDelayFromConfig(data.config || {});
+        statusEl.textContent = "Configuracao aplicada com sucesso.";
+        await loadModelConfig();
+    }
+
+    async function loadLineConfig() {
+        try {
+            const response = await fetch("/api/line-config/");
+            const data = await response.json();
+            const orientation = data.orientation ?? "horizontal";
+            const positionPercent = Math.round((data.position_ratio ?? 0.5) * 100);
+            document.getElementById("lineOrientation").value = orientation;
+            document.getElementById("linePosition").value = positionPercent;
+            document.getElementById("linePositionLabel").textContent = `${positionPercent}%`;
+        } catch (error) {
+            console.error("Falha ao carregar configuracao da linha:", error);
+        }
+    }
+
+    async function applyLineConfig() {
+        const orientation = document.getElementById("lineOrientation").value;
+        const positionPercent = document.getElementById("linePosition").value;
+        const body = new URLSearchParams({ orientation, position_percent: positionPercent });
+
+        const response = await fetch("/api/set-line-config/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-CSRFToken": getCookie("csrftoken"),
+            },
+            body,
+        });
+
+        if (!response.ok) {
+            let message = "Nao foi possivel atualizar a linha de contagem.";
+            try {
+                const payload = await response.json();
+                if (payload.error) {
+                    message = payload.error;
+                }
+            } catch (error) {
+                console.error("Falha ao ler erro da linha:", error);
+            }
+            alert(message);
+            return;
+        }
+
+        await loadLineConfig();
+    }
+
+    function renderCounters(counters) {
+        const root = document.getElementById("dynamicCounters");
+        root.innerHTML = "";
+
+        const entries = Object.entries(counters || {});
+        if (entries.length === 0) {
+            root.innerHTML = '<div class="muted">Nenhum objeto contabilizado ainda.</div>';
+            return;
+        }
+
+        for (const [label, value] of entries.slice(0, 18)) {
+            const row = document.createElement("div");
+            row.style.display = "flex";
+            row.style.justifyContent = "space-between";
+            row.style.padding = "10px";
+            row.style.border = "1px solid #284469";
+            row.style.borderRadius = "10px";
+            row.innerHTML = `<span class="muted">${label.toUpperCase()}</span><strong>${value}</strong>`;
+            root.appendChild(row);
+        }
+    }
+
+    async function refreshCounters() {
+        try {
+            const response = await fetch("/api/counters/");
+            const data = await response.json();
+            renderCounters(data);
+        } catch (error) {
+            console.error("Falha ao atualizar contadores:", error);
+        }
+    }
+
+    async function getFrameBlob() {
+        const url = `/api/frame/?t=${Date.now()}`;
+
+        if (window.axios) {
+            const response = await axios.get(url, {
+                responseType: "blob",
+                timeout: 9000,
+                headers: { "Cache-Control": "no-cache" },
+            });
+            return response.data;
+        }
+
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) {
+            throw new Error(`Frame HTTP ${response.status}`);
+        }
+        return await response.blob();
+    }
+
+    async function startCanvasStream() {
+        const canvas = document.getElementById("liveCanvas");
+        const ctx = canvas.getContext("2d");
+        const statusEl = document.getElementById("streamStatus");
+
+        while (true) {
+            try {
+                const blob = await getFrameBlob();
+                const bitmap = await createImageBitmap(blob);
+
+                if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+                    canvas.width = bitmap.width;
+                    canvas.height = bitmap.height;
+                }
+
+                ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+                bitmap.close();
+                statusEl.textContent = `Streaming ativo (${Math.round(1000 / streamDelayMs)} FPS render).`;
+            } catch (error) {
+                statusEl.textContent = "Aguardando frames... verifique a fonte da camera.";
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, streamDelayMs));
+        }
+    }
+
+    setInterval(refreshCounters, 700);
+    refreshCounters();
+    loadSources();
+    loadModelConfig();
+    loadLineConfig();
+    searchHfModels();
+    startCanvasStream();
+
+    document.getElementById("applySource").addEventListener("click", applySelectedSource);
+    document.getElementById("applyLineConfig").addEventListener("click", applyLineConfig);
+    document.getElementById("applyModelConfig").addEventListener("click", () => applyModelConfig());
+    document.getElementById("vehiclePreset").addEventListener("click", () => applyModelConfig({ vehicle_focus: "true" }));
+    document.getElementById("searchHfModels").addEventListener("click", searchHfModels);
+    document.getElementById("useHfSelected").addEventListener("click", useSelectedHfModel);
+    document.getElementById("linePosition").addEventListener("input", (event) => {
+        document.getElementById("linePositionLabel").textContent = `${event.target.value}%`;
+    });
+</script>
+{% endblock %}

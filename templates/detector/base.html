@@ -1,0 +1,113 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}VisionQQ{% endblock %}</title>
+    <style>
+        :root {
+            --bg: #07121f;
+            --surface: #12263f;
+            --surface-2: #0d1e33;
+            --text: #edf3ff;
+            --muted: #98abc8;
+            --accent: #1ec8b0;
+            --danger: #ff6b6b;
+            --border: #284469;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            background: radial-gradient(circle at 20% 0%, #16345a 0%, var(--bg) 55%);
+            min-height: 100vh;
+        }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--border);
+            background: color-mix(in srgb, var(--surface) 88%, black);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .brand { font-weight: 800; letter-spacing: 0.04em; }
+        .nav {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .nav a, .btn {
+            text-decoration: none;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 8px 12px;
+            border-radius: 10px;
+            background: var(--surface-2);
+            cursor: pointer;
+            font-size: 0.92rem;
+        }
+        .btn-danger { border-color: #6a2f39; background: #331720; }
+        .page {
+            max-width: 1260px;
+            margin: 24px auto;
+            padding: 0 20px 24px;
+        }
+        .card {
+            background: color-mix(in srgb, var(--surface) 92%, black);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+        }
+        .muted { color: var(--muted); }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        th { color: var(--muted); font-weight: 700; }
+        .pagination {
+            margin-top: 12px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .pill {
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            border-radius: 8px;
+            padding: 6px 10px;
+            color: var(--text);
+            text-decoration: none;
+        }
+    </style>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    {% if user.is_authenticated %}
+    <header class="topbar">
+        <div class="brand">VisionQQ</div>
+        <nav class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/registros/">Registros de Deteccoes</a>
+            <form method="post" action="/logout/" style="margin:0;">
+                {% csrf_token %}
+                <button class="btn btn-danger" type="submit">Sair</button>
+            </form>
+        </nav>
+    </header>
+    {% endif %}
+
+    <main class="page">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
