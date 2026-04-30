@@ -5,13 +5,15 @@
 {% block content %}
 <section class="card">
     <h1 style="margin-top:0;">Registros de Objetos Detectados</h1>
-    <p class="muted">Historico de eventos de contagem para todas as classes detectadas.</p>
+    <p class="muted">Historico de eventos de deteccao e contagem para todas as classes detectadas.</p>
 
     <table>
         <thead>
             <tr>
                 <th>ID</th>
+                <th>Evento</th>
                 <th>Objeto</th>
+                <th>Track ID</th>
                 <th>Data/Hora</th>
                 <th>Count Total</th>
                 <th>Imagem Completa</th>
@@ -22,7 +24,9 @@
             {% for item in page_obj %}
             <tr>
                 <td>{{ item.id }}</td>
+                <td>{{ item.evento_tipo }}</td>
                 <td>{{ item.objeto_tipo }}</td>
+                <td>{% if item.track_id %}{{ item.track_id }}{% else %}-{% endif %}</td>
                 <td>{{ item.timestamp|date:"d/m/Y H:i:s" }}</td>
                 <td>{{ item.count_total }}</td>
                 <td>
@@ -46,7 +50,7 @@
             </tr>
             {% empty %}
             <tr>
-                <td colspan="6" class="muted">Nenhum registro detectado ainda.</td>
+                <td colspan="8" class="muted">Nenhum registro detectado ainda.</td>
             </tr>
             {% endfor %}
         </tbody>

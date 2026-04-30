@@ -27,9 +27,17 @@ class DatabaseManager:
             return None
         return encoded.tobytes()
 
-    def enqueue_detection(self, objeto_tipo: str, count_total: int, frame_full=None, frame_crop=None) -> None:
+    def enqueue_detection(
+        self,
+        objeto_tipo: str,
+        count_total: int,
+        frame_full=None,
+        frame_crop=None,
+        evento_tipo: str = "counter",
+        track_id: int | None = None,
+    ) -> None:
         try:
-            self._queue.put_nowait((objeto_tipo, count_total, frame_full, frame_crop))
+            self._queue.put_nowait((objeto_tipo, count_total, frame_full, frame_crop, evento_tipo, track_id))
         except queue.Full:
             # Em carga alta, preferimos descartar log do que travar stream.
             pass
@@ -41,16 +49,26 @@ class DatabaseManager:
                 self._queue.task_done()
                 break
 
-            objeto_tipo, count_total, frame_full, frame_crop = item
+            objeto_tipo, count_total, frame_full, frame_crop, evento_tipo, track_id = item
             try:
-                self._save_detection(objeto_tipo, count_total, frame_full, frame_crop)
+                self._save_detection(objeto_tipo, count_total, frame_full, frame_crop, evento_tipo, track_id)
             finally:
                 self._queue.task_done()
 
-    def _save_detection(self, objeto_tipo: str, count_total: int, frame_full=None, frame_crop=None) -> DetectionLog:
+    def _save_detection(
+        self,
+        objeto_tipo: str,
+        count_total: int,
+        frame_full=None,
+        frame_crop=None,
+        evento_tipo: str = "counter",
+        track_id: int | None = None,
+    ) -> DetectionLog:
         detection = DetectionLog.objects.create(
             objeto_tipo=objeto_tipo,
             count_total=count_total,
+            evento_tipo=evento_tipo,
+            track_id=track_id,
         )
 
         timestamp_tag = timezone.now().strftime("%Y%m%d_%H%M%S_%f")

@@ -106,7 +106,32 @@
             </div>
             <div style="display:flex; flex-direction:column; justify-content:flex-end; gap:8px;">
                 <label class="muted"><input id="zoomEnabledInput" type="checkbox"> Ativar zoom de imagem</label>
-                <label class="muted"><input id="detectZoomOnlyInput" type="checkbox" checked> Detectar so na area do zoom</label>
+                <label class="muted"><input id="detectZoomOnlyInput" type="checkbox" checked> Detectar so na area selecionada/zoom</label>
+            </div>
+            <div>
+                <label class="muted">ROI X (0-100%)</label>
+                <input id="roiXInput" type="number" min="0" max="100" step="1" value="10" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">ROI Y (0-100%)</label>
+                <input id="roiYInput" type="number" min="0" max="100" step="1" value="10" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">ROI Largura (0-100%)</label>
+                <input id="roiWInput" type="number" min="2" max="100" step="1" value="80" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div>
+                <label class="muted">ROI Altura (0-100%)</label>
+                <input id="roiHInput" type="number" min="2" max="100" step="1" value="80" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div style="display:flex; flex-direction:column; justify-content:flex-end; gap:8px;">
+                <label class="muted"><input id="roiEnabledInput" type="checkbox"> Ativar ROI selecionada</label>
+                <label class="muted"><input id="displayRoiOnlyInput" type="checkbox"> Exibir somente ROI</label>
+            </div>
+            <div style="display:flex; align-items:flex-end; gap:8px; grid-column: span 3; flex-wrap:wrap;">
+                <button id="useCanvasSelection" class="btn" type="button">Usar Selecao do Canvas</button>
+                <button id="clearCanvasSelection" class="btn" type="button">Limpar Selecao</button>
+                <span id="roiStatus" class="muted">Arraste no video para definir a area de deteccao.</span>
             </div>
             <div style="display:flex; align-items:flex-end; gap:10px; grid-column: span 2;">
                 <button id="applyModelConfig" class="btn" type="button">Aplicar Config</button>
@@ -132,6 +157,12 @@
     <div style="display:grid; grid-template-columns:2fr 1fr; gap:20px; align-items:start;">
         <article class="card">
             <canvas id="liveCanvas" style="width:100%; min-height:360px; border-radius:10px; border:1px solid #2a466f; background:#101a29;"></canvas>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; align-items:center;">
+                <button id="startDrawRoi" class="btn" type="button">Desenhar Area</button>
+                <button id="saveDrawRoi" class="btn" type="button">Salvar Area e Detectar</button>
+                <button id="cancelDrawRoi" class="btn" type="button">Cancelar</button>
+                <label class="muted"><input id="quickDisplayRoiOnly" type="checkbox"> Exibir so area</label>
+            </div>
             <div id="streamStatus" class="muted" style="margin-top:8px;">Conectando ao stream...</div>
         </article>
         <aside class="card">
@@ -143,6 +174,15 @@
 
 <script>
     let streamDelayMs = 90;
+    let selectionState = {
+        drawing: false,
+        selectionMode: false,
+        startX: 0,
+        startY: 0,
+        currentX: 0,
+        currentY: 0,
+        draftRoi: null,
+    };
 
     function getCookie(name) {
         const value = `; ${document.cookie}`;
@@ -162,6 +202,89 @@
         const fps = Number(config?.client_fps ?? 12);
         const safe = Math.max(1, Math.min(60, fps));
         streamDelayMs = Math.max(16, Math.floor(1000 / safe));
+    }
+
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    function canvasPointFromEvent(canvas, event) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+            x: (event.clientX - rect.left) * scaleX,
+            y: (event.clientY - rect.top) * scaleY,
+        };
+    }
+
+    function normalizeRoi(x1, y1, x2, y2, canvas) {
+        const left = clamp(Math.min(x1, x2), 0, canvas.width);
+        const top = clamp(Math.min(y1, y2), 0, canvas.height);
+        const right = clamp(Math.max(x1, x2), 0, canvas.width);
+        const bottom = clamp(Math.max(y1, y2), 0, canvas.height);
+        const w = right - left;
+        const h = bottom - top;
+        if (w < 10 || h < 10) {
+            return null;
+        }
+        return {
+            x: left / canvas.width,
+            y: top / canvas.height,
+            w: w / canvas.width,
+            h: h / canvas.height,
+        };
+    }
+
+    function drawSelectionOverlay(ctx, canvas) {
+        let roi = selectionState.draftRoi;
+        if (!roi) {
+            const x = Number(document.getElementById("roiXInput").value || 10) / 100;
+            const y = Number(document.getElementById("roiYInput").value || 10) / 100;
+            const w = Number(document.getElementById("roiWInput").value || 80) / 100;
+            const h = Number(document.getElementById("roiHInput").value || 80) / 100;
+            roi = { x, y, w, h };
+        }
+
+        if (document.getElementById("roiEnabledInput").checked || selectionState.draftRoi) {
+            const x = clamp(roi.x, 0, 1) * canvas.width;
+            const y = clamp(roi.y, 0, 1) * canvas.height;
+            const w = clamp(roi.w, 0.02, 1) * canvas.width;
+            const h = clamp(roi.h, 0.02, 1) * canvas.height;
+            ctx.save();
+            ctx.strokeStyle = "#ffd43b";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 6]);
+            ctx.strokeRect(x, y, w, h);
+            ctx.fillStyle = "rgba(255, 212, 59, 0.18)";
+            ctx.fillRect(x, y, w, h);
+            ctx.setLineDash([]);
+            ctx.fillStyle = "#fff2bf";
+            ctx.font = "bold 14px system-ui";
+            ctx.fillText("ROI", x + 8, Math.max(18, y - 8));
+            ctx.restore();
+        }
+
+        if (selectionState.drawing) {
+            const left = Math.min(selectionState.startX, selectionState.currentX);
+            const top = Math.min(selectionState.startY, selectionState.currentY);
+            const w = Math.abs(selectionState.currentX - selectionState.startX);
+            const h = Math.abs(selectionState.currentY - selectionState.startY);
+            ctx.save();
+            ctx.strokeStyle = "#51cf66";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            ctx.strokeRect(left, top, w, h);
+            ctx.restore();
+        }
+    }
+
+    function writeRoiInputs(roi) {
+        if (!roi) return;
+        document.getElementById("roiXInput").value = Math.round(clamp(roi.x, 0, 1) * 100);
+        document.getElementById("roiYInput").value = Math.round(clamp(roi.y, 0, 1) * 100);
+        document.getElementById("roiWInput").value = Math.round(clamp(roi.w, 0.02, 1) * 100);
+        document.getElementById("roiHInput").value = Math.round(clamp(roi.h, 0.02, 1) * 100);
     }
 
     function renderHfModels(models) {
@@ -304,6 +427,13 @@
             document.getElementById("zoomScaleInput").value = toStr(data.zoom_scale, "1.0");
             document.getElementById("zoomCenterXInput").value = toStr(Math.round((Number(data.zoom_center_x ?? 0.5)) * 100), "50");
             document.getElementById("zoomCenterYInput").value = toStr(Math.round((Number(data.zoom_center_y ?? 0.5)) * 100), "50");
+            document.getElementById("roiEnabledInput").checked = Boolean(data.roi_enabled);
+            document.getElementById("displayRoiOnlyInput").checked = Boolean(data.display_roi_only);
+            document.getElementById("roiXInput").value = toStr(Math.round((Number(data.roi_x ?? 0.1)) * 100), "10");
+            document.getElementById("roiYInput").value = toStr(Math.round((Number(data.roi_y ?? 0.1)) * 100), "10");
+            document.getElementById("roiWInput").value = toStr(Math.round((Number(data.roi_w ?? 0.8)) * 100), "80");
+            document.getElementById("roiHInput").value = toStr(Math.round((Number(data.roi_h ?? 0.8)) * 100), "80");
+            selectionState.draftRoi = null;
 
             updateStreamDelayFromConfig(data);
         } catch (error) {
@@ -331,6 +461,12 @@
             zoom_scale: document.getElementById("zoomScaleInput").value,
             zoom_center_x: (Number(document.getElementById("zoomCenterXInput").value || 50) / 100).toString(),
             zoom_center_y: (Number(document.getElementById("zoomCenterYInput").value || 50) / 100).toString(),
+            roi_enabled: document.getElementById("roiEnabledInput").checked ? "true" : "false",
+            roi_x: (Number(document.getElementById("roiXInput").value || 10) / 100).toString(),
+            roi_y: (Number(document.getElementById("roiYInput").value || 10) / 100).toString(),
+            roi_w: (Number(document.getElementById("roiWInput").value || 80) / 100).toString(),
+            roi_h: (Number(document.getElementById("roiHInput").value || 80) / 100).toString(),
+            display_roi_only: document.getElementById("displayRoiOnlyInput").checked ? "true" : "false",
             ...extra,
         };
 
@@ -480,6 +616,7 @@
 
                 ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
                 bitmap.close();
+                drawSelectionOverlay(ctx, canvas);
                 statusEl.textContent = `Streaming ativo (${Math.round(1000 / streamDelayMs)} FPS render).`;
             } catch (error) {
                 statusEl.textContent = "Aguardando frames... verifique a fonte da camera.";
@@ -489,12 +626,109 @@
         }
     }
 
+    function bindCanvasSelection() {
+        const canvas = document.getElementById("liveCanvas");
+        const roiStatus = document.getElementById("roiStatus");
+        const streamStatus = document.getElementById("streamStatus");
+
+        canvas.addEventListener("mousedown", (event) => {
+            if (!selectionState.selectionMode) return;
+            if (canvas.width < 2 || canvas.height < 2) return;
+            const p = canvasPointFromEvent(canvas, event);
+            selectionState.drawing = true;
+            selectionState.startX = p.x;
+            selectionState.startY = p.y;
+            selectionState.currentX = p.x;
+            selectionState.currentY = p.y;
+            roiStatus.textContent = "Selecionando area...";
+            streamStatus.textContent = "Modo selecao ativo: arraste para desenhar a area.";
+        });
+
+        canvas.addEventListener("mousemove", (event) => {
+            if (!selectionState.drawing) return;
+            const p = canvasPointFromEvent(canvas, event);
+            selectionState.currentX = p.x;
+            selectionState.currentY = p.y;
+        });
+
+        const finishSelection = () => {
+            if (!selectionState.drawing) return;
+            selectionState.drawing = false;
+            const roi = normalizeRoi(
+                selectionState.startX,
+                selectionState.startY,
+                selectionState.currentX,
+                selectionState.currentY,
+                canvas
+            );
+            if (!roi) {
+                roiStatus.textContent = "Selecao muito pequena. Arraste uma area maior.";
+                return;
+            }
+            selectionState.draftRoi = roi;
+            writeRoiInputs(roi);
+            roiStatus.textContent = "Selecao pronta. Clique em Usar Selecao do Canvas.";
+            streamStatus.textContent = "Selecao pronta. Clique em Salvar Area e Detectar.";
+        };
+
+        canvas.addEventListener("mouseup", finishSelection);
+        canvas.addEventListener("mouseleave", finishSelection);
+    }
+
+    function applyCanvasSelectionToForm() {
+        const roiStatus = document.getElementById("roiStatus");
+        if (!selectionState.draftRoi) {
+            roiStatus.textContent = "Nenhuma selecao nova no canvas.";
+            return;
+        }
+        writeRoiInputs(selectionState.draftRoi);
+        document.getElementById("roiEnabledInput").checked = true;
+        document.getElementById("detectZoomOnlyInput").checked = true;
+        roiStatus.textContent = "Selecao aplicada ao formulario. Clique em Aplicar Config.";
+    }
+
+    function clearCanvasSelection() {
+        selectionState.draftRoi = null;
+        selectionState.selectionMode = false;
+        selectionState.drawing = false;
+        document.getElementById("roiEnabledInput").checked = false;
+        document.getElementById("displayRoiOnlyInput").checked = false;
+        document.getElementById("liveCanvas").style.cursor = "default";
+        document.getElementById("roiStatus").textContent = "Selecao limpa.";
+    }
+
+    function startRoiDrawMode() {
+        selectionState.selectionMode = true;
+        selectionState.drawing = false;
+        document.getElementById("liveCanvas").style.cursor = "crosshair";
+        document.getElementById("roiStatus").textContent = "Modo desenho ativo. Arraste no video.";
+        document.getElementById("streamStatus").textContent = "Modo selecao ativo: arraste para escolher a area.";
+    }
+
+    async function saveDrawRoiAndApply() {
+        if (!selectionState.draftRoi) {
+            document.getElementById("roiStatus").textContent = "Desenhe uma area antes de salvar.";
+            return;
+        }
+
+        writeRoiInputs(selectionState.draftRoi);
+        document.getElementById("roiEnabledInput").checked = true;
+        document.getElementById("detectZoomOnlyInput").checked = true;
+        document.getElementById("displayRoiOnlyInput").checked = document.getElementById("quickDisplayRoiOnly").checked;
+
+        await applyModelConfig();
+        selectionState.selectionMode = false;
+        document.getElementById("liveCanvas").style.cursor = "default";
+        document.getElementById("roiStatus").textContent = "Area aplicada com sucesso.";
+    }
+
     setInterval(refreshCounters, 700);
     refreshCounters();
     loadSources();
     loadModelConfig();
     loadLineConfig();
     searchHfModels();
+    bindCanvasSelection();
     startCanvasStream();
 
     document.getElementById("applySource").addEventListener("click", applySelectedSource);
@@ -503,6 +737,11 @@
     document.getElementById("vehiclePreset").addEventListener("click", () => applyModelConfig({ vehicle_focus: "true" }));
     document.getElementById("searchHfModels").addEventListener("click", searchHfModels);
     document.getElementById("useHfSelected").addEventListener("click", useSelectedHfModel);
+    document.getElementById("useCanvasSelection").addEventListener("click", applyCanvasSelectionToForm);
+    document.getElementById("clearCanvasSelection").addEventListener("click", clearCanvasSelection);
+    document.getElementById("startDrawRoi").addEventListener("click", startRoiDrawMode);
+    document.getElementById("saveDrawRoi").addEventListener("click", saveDrawRoiAndApply);
+    document.getElementById("cancelDrawRoi").addEventListener("click", clearCanvasSelection);
     document.getElementById("linePosition").addEventListener("input", (event) => {
         document.getElementById("linePositionLabel").textContent = `${event.target.value}%`;
     });

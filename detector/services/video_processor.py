@@ -120,6 +120,12 @@ class VideoProcessor:
         self.zoom_scale = 1.0
         self.zoom_center_x = 0.5
         self.zoom_center_y = 0.5
+        self.roi_enabled = False
+        self.roi_x = 0.1
+        self.roi_y = 0.1
+        self.roi_w = 0.8
+        self.roi_h = 0.8
+        self.display_roi_only = False
 
         self.model = YOLO(model_path)
         self.class_names = self.model.names
@@ -140,6 +146,10 @@ class VideoProcessor:
         self.line_orientation = "horizontal"
         self.line_position_ratio = 0.5
         self.last_status_message = "Inicializando detector..."
+        self.log_all_detections = True
+        self.log_counter_events = True
+        self.class_detect_counts: Dict[str, int] = defaultdict(int)
+        self.id_logged_detection: set[int] = set()
 
     def _apply_capture_settings(self, cap):
         if cap is None:
@@ -182,6 +192,42 @@ class VideoProcessor:
         if crop.size == 0:
             return frame
         return cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    def _extract_roi_by_norm(self, frame, x: float, y: float, w_ratio: float, h_ratio: float):
+        h, w = frame.shape[:2]
+        x = max(0.0, min(0.98, float(x)))
+        y = max(0.0, min(0.98, float(y)))
+        w_ratio = max(0.02, min(1.0, float(w_ratio)))
+        h_ratio = max(0.02, min(1.0, float(h_ratio)))
+
+        x1 = int(x * w)
+        y1 = int(y * h)
+        x2 = int(min(w, (x + w_ratio) * w))
+        y2 = int(min(h, (y + h_ratio) * h))
+        if x2 - x1 < 8 or y2 - y1 < 8:
+            return None
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            return None
+        return crop, x1, y1, x2, y2
+
+    def _draw_roi_overlay(self, frame):
+        if not self.roi_enabled:
+            return
+        info = self._extract_roi_by_norm(frame, self.roi_x, self.roi_y, self.roi_w, self.roi_h)
+        if info is None:
+            return
+        _, x1, y1, x2, y2 = info
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 215, 0), 2)
+        cv2.putText(
+            frame,
+            "ROI",
+            (x1, max(20, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 215, 0),
+            2,
+        )
 
     def _reconnect_if_needed(self) -> bool:
         if self.capture.isOpened():
@@ -397,6 +443,14 @@ class VideoProcessor:
                 "zoom_scale": self.zoom_scale,
                 "zoom_center_x": self.zoom_center_x,
                 "zoom_center_y": self.zoom_center_y,
+                "roi_enabled": self.roi_enabled,
+                "roi_x": self.roi_x,
+                "roi_y": self.roi_y,
+                "roi_w": self.roi_w,
+                "roi_h": self.roi_h,
+                "display_roi_only": self.display_roi_only,
+                "log_all_detections": self.log_all_detections,
+                "log_counter_events": self.log_counter_events,
                 "available_classes": classes,
             }
 
@@ -421,6 +475,14 @@ class VideoProcessor:
         zoom_scale = payload.get("zoom_scale")
         zoom_center_x = payload.get("zoom_center_x")
         zoom_center_y = payload.get("zoom_center_y")
+        roi_enabled = payload.get("roi_enabled")
+        roi_x = payload.get("roi_x")
+        roi_y = payload.get("roi_y")
+        roi_w = payload.get("roi_w")
+        roi_h = payload.get("roi_h")
+        display_roi_only = payload.get("display_roi_only")
+        log_all_detections = payload.get("log_all_detections")
+        log_counter_events = payload.get("log_counter_events")
 
         with self.lock:
             if provider is not None:
@@ -469,6 +531,22 @@ class VideoProcessor:
                 self.zoom_center_x = max(0.0, min(1.0, float(zoom_center_x)))
             if zoom_center_y is not None and str(zoom_center_y).strip() != "":
                 self.zoom_center_y = max(0.0, min(1.0, float(zoom_center_y)))
+            if roi_enabled is not None:
+                self.roi_enabled = str(roi_enabled).lower() in {"1", "true", "yes", "on"}
+            if roi_x is not None and str(roi_x).strip() != "":
+                self.roi_x = max(0.0, min(0.98, float(roi_x)))
+            if roi_y is not None and str(roi_y).strip() != "":
+                self.roi_y = max(0.0, min(0.98, float(roi_y)))
+            if roi_w is not None and str(roi_w).strip() != "":
+                self.roi_w = max(0.02, min(1.0, float(roi_w)))
+            if roi_h is not None and str(roi_h).strip() != "":
+                self.roi_h = max(0.02, min(1.0, float(roi_h)))
+            if display_roi_only is not None:
+                self.display_roi_only = str(display_roi_only).lower() in {"1", "true", "yes", "on"}
+            if log_all_detections is not None:
+                self.log_all_detections = str(log_all_detections).lower() in {"1", "true", "yes", "on"}
+            if log_counter_events is not None:
+                self.log_counter_events = str(log_counter_events).lower() in {"1", "true", "yes", "on"}
 
             if class_filter is not None:
                 self.class_filter_text = class_filter.strip()
@@ -485,6 +563,7 @@ class VideoProcessor:
             self.id_seen_frames.clear()
             self.id_last_center.clear()
             self.id_counted.clear()
+            self.id_logged_detection.clear()
 
         return self.get_runtime_config()
 
@@ -538,6 +617,25 @@ class VideoProcessor:
         box,
     ):
         self.id_seen_frames[track_id] += 1
+        if (
+            self.log_all_detections
+            and self.id_seen_frames[track_id] >= self.stable_frames
+            and track_id not in self.id_logged_detection
+        ):
+            self.class_detect_counts[class_name] += 1
+            self.id_logged_detection.add(track_id)
+            x1, y1, x2, y2 = box
+            frame_full = frame.copy()
+            frame_crop = self._crop_box(frame, x1, y1, x2, y2)
+            self.db.enqueue_detection(
+                class_name,
+                self.class_detect_counts[class_name],
+                frame_full=frame_full,
+                frame_crop=frame_crop,
+                evento_tipo="detected",
+                track_id=track_id,
+            )
+
         previous_center = self.id_last_center.get(track_id)
         self.id_last_center[track_id] = (center_x, center_y)
 
@@ -553,15 +651,18 @@ class VideoProcessor:
         if self._crossed_line(previous_center, (center_x, center_y)):
             self.class_counts[class_name] += 1
             self.id_counted.add(track_id)
-            x1, y1, x2, y2 = box
-            frame_full = frame.copy()
-            frame_crop = self._crop_box(frame, x1, y1, x2, y2)
-            self.db.enqueue_detection(
-                class_name,
-                self.class_counts[class_name],
-                frame_full=frame_full,
-                frame_crop=frame_crop,
-            )
+            if self.log_counter_events:
+                x1, y1, x2, y2 = box
+                frame_full = frame.copy()
+                frame_crop = self._crop_box(frame, x1, y1, x2, y2)
+                self.db.enqueue_detection(
+                    class_name,
+                    self.class_counts[class_name],
+                    frame_full=frame_full,
+                    frame_crop=frame_crop,
+                    evento_tipo="counter",
+                    track_id=track_id,
+                )
 
     def process_frame(self):
         if not self.running:
@@ -575,12 +676,51 @@ class VideoProcessor:
             return self._build_status_frame(self.last_status_message)
 
         original_frame = frame
-        frame = self._build_zoomed_frame(original_frame)
-        self.frame_height, self.frame_width = frame.shape[:2]
+        display_frame = original_frame
+        detection_frame = original_frame
+        map_scale_x = 1.0
+        map_scale_y = 1.0
+        map_offset_x = 0.0
+        map_offset_y = 0.0
+
+        roi_info = None
+        if self.roi_enabled:
+            roi_info = self._extract_roi_by_norm(original_frame, self.roi_x, self.roi_y, self.roi_w, self.roi_h)
+
+        if roi_info is not None:
+            roi_frame, rx1, ry1, rx2, ry2 = roi_info
+            roi_w_px = max(1, rx2 - rx1)
+            roi_h_px = max(1, ry2 - ry1)
+
+            if self.display_roi_only:
+                display_frame = cv2.resize(
+                    roi_frame,
+                    (original_frame.shape[1], original_frame.shape[0]),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                detection_frame = roi_frame
+                map_scale_x = float(display_frame.shape[1]) / float(roi_w_px)
+                map_scale_y = float(display_frame.shape[0]) / float(roi_h_px)
+                map_offset_x = 0.0
+                map_offset_y = 0.0
+            else:
+                display_frame = original_frame
+                if self.detect_zoom_only:
+                    detection_frame = roi_frame
+                    map_scale_x = 1.0
+                    map_scale_y = 1.0
+                    map_offset_x = float(rx1)
+                    map_offset_y = float(ry1)
+
+        elif self.zoom_enabled:
+            display_frame = self._build_zoomed_frame(original_frame)
+            detection_frame = display_frame
+
+        self.frame_height, self.frame_width = display_frame.shape[:2]
         self.last_status_message = "Streaming ativo."
         try:
             results = self.model.track(
-                source=frame if self.detect_zoom_only or self.zoom_enabled else original_frame,
+                source=detection_frame,
                 conf=self.confidence,
                 iou=self.iou_threshold,
                 imgsz=self.imgsz,
@@ -593,7 +733,7 @@ class VideoProcessor:
             # Evita quebrar a stream caso o rastreador/inferencia falhe momentaneamente.
             self.last_status_message = "Erro temporario na inferencia; tentando recuperar..."
             cv2.putText(
-                frame,
+                display_frame,
                 self.last_status_message,
                 (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -601,7 +741,7 @@ class VideoProcessor:
                 (80, 80, 255),
                 2,
             )
-            return frame
+            return display_frame
 
         result = results[0]
         if result.boxes is not None and result.boxes.id is not None:
@@ -612,6 +752,10 @@ class VideoProcessor:
             for box, class_id, track_id in zip(boxes, class_ids, track_ids):
                 try:
                     x1, y1, x2, y2 = [float(v) for v in box]
+                    x1 = (x1 * map_scale_x) + map_offset_x
+                    y1 = (y1 * map_scale_y) + map_offset_y
+                    x2 = (x2 * map_scale_x) + map_offset_x
+                    y2 = (y2 * map_scale_y) + map_offset_y
                     class_id = int(class_id)
                     track_id = int(track_id)
 
@@ -630,14 +774,14 @@ class VideoProcessor:
                         track_id,
                         center_x,
                         center_y,
-                        frame=frame,
+                        frame=display_frame,
                         box=(x1, y1, x2, y2),
                     )
 
-                    cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+                    cv2.rectangle(display_frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
                     label = f"{class_name} #{track_id}"
                     cv2.putText(
-                        frame,
+                        display_frame,
                         label,
                         (int(x1), max(25, int(y1) - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX,
@@ -649,8 +793,10 @@ class VideoProcessor:
                     # Ignora deteccao invalida sem derrubar stream.
                     continue
 
-        self._draw_overlay(frame)
-        return frame
+        if self.roi_enabled and not self.display_roi_only:
+            self._draw_roi_overlay(display_frame)
+        self._draw_overlay(display_frame)
+        return display_frame
 
     def get_jpeg_bytes(self) -> Optional[bytes]:
         with self.lock:
@@ -686,6 +832,7 @@ class VideoProcessor:
             self.id_seen_frames.clear()
             self.id_last_center.clear()
             self.id_counted.clear()
+            self.id_logged_detection.clear()
 
     def get_source_label(self) -> str:
         return self.source_selector_value
@@ -716,6 +863,7 @@ class VideoProcessor:
             self.id_seen_frames.clear()
             self.id_last_center.clear()
             self.id_counted.clear()
+            self.id_logged_detection.clear()
             return True
 
     def stop(self):
