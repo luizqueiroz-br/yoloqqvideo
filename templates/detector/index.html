@@ -9,6 +9,12 @@
 <section>
     <h1 style="margin:0 0 8px;">Deteccao em Tempo Real</h1>
     <p class="muted" style="margin:0 0 18px;">Escolha modelo, ajuste parametros e controle a performance pela interface.</p>
+    <div style="display:flex; align-items:center; gap:10px; margin:0 0 14px;">
+        <span class="muted">Status do Modelo:</span>
+        <span id="modelHealthBadge" style="padding:6px 10px; border-radius:999px; border:1px solid #34506f; background:#13243a; color:#cfe2ff; font-weight:700;">Verificando...</span>
+        <span id="modelHealthModel" class="muted">Modelo: -</span>
+        <span id="modelHealthText" class="muted">Aguardando primeira inferencia.</span>
+    </div>
 
     <div class="card" style="margin-bottom:14px;">
         <h3 style="margin-top:0;">Fonte de Video</h3>
@@ -40,6 +46,15 @@
             <div>
                 <label class="muted">HF Filename (.pt)</label>
                 <input id="hfFilename" type="text" placeholder="model.pt (opcional)" style="width:100%; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+            </div>
+            <div style="grid-column: span 4;">
+                <label class="muted">Conexao Hugging Face (para repos privados/gated)</label>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <input id="hfTokenInput" type="password" placeholder="hf_... token de acesso" style="min-width:360px; background:#0d1e33; color:#edf3ff; border:1px solid #284469; border-radius:10px; padding:10px;">
+                    <button id="connectHfBtn" class="btn" type="button">Conectar HF</button>
+                    <button id="disconnectHfBtn" class="btn" type="button">Desconectar</button>
+                    <span id="hfAuthStatus" class="muted">HF: nao conectado</span>
+                </div>
             </div>
             <div style="grid-column: span 3;">
                 <label class="muted">Busca de modelos HF (deteccao)</label>
@@ -183,6 +198,31 @@
         currentY: 0,
         draftRoi: null,
     };
+    const appState = (() => {
+        if (window.__visionqqApp && typeof window.__visionqqApp.destroy === "function") {
+            window.__visionqqApp.destroy();
+        }
+        const state = {
+            running: true,
+            countersIntervalId: null,
+            countersInFlight: false,
+            healthIntervalId: null,
+            healthInFlight: false,
+            destroy() {
+                state.running = false;
+                if (state.countersIntervalId) {
+                    clearInterval(state.countersIntervalId);
+                    state.countersIntervalId = null;
+                }
+                if (state.healthIntervalId) {
+                    clearInterval(state.healthIntervalId);
+                    state.healthIntervalId = null;
+                }
+            },
+        };
+        window.__visionqqApp = state;
+        return state;
+    })();
 
     function getCookie(name) {
         const value = `; ${document.cookie}`;
@@ -328,6 +368,66 @@
         } catch (error) {
             status.textContent = "Falha ao consultar modelos. Verifique rede e dependencias.";
         }
+    }
+
+    async function loadHfAuthStatus() {
+        const label = document.getElementById("hfAuthStatus");
+        try {
+            const response = await fetch("/api/hf-auth-status/");
+            const data = await response.json();
+            if (data.connected) {
+                label.textContent = `HF: conectado (${data.user || "usuario"})`;
+            } else {
+                label.textContent = "HF: nao conectado";
+            }
+        } catch (error) {
+            label.textContent = "HF: falha ao verificar conexao";
+        }
+    }
+
+    async function connectHf() {
+        const token = document.getElementById("hfTokenInput").value.trim();
+        const label = document.getElementById("hfAuthStatus");
+        if (!token) {
+            label.textContent = "Informe um token HF valido.";
+            return;
+        }
+        label.textContent = "Conectando no Hugging Face...";
+        const body = new URLSearchParams({ token });
+        const response = await fetch("/api/hf-connect/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-CSRFToken": getCookie("csrftoken"),
+            },
+            body,
+        });
+        if (!response.ok) {
+            try {
+                const payload = await response.json();
+                label.textContent = payload.error || "Falha ao conectar.";
+            } catch (error) {
+                label.textContent = "Falha ao conectar.";
+            }
+            return;
+        }
+        document.getElementById("hfTokenInput").value = "";
+        await loadHfAuthStatus();
+        document.getElementById("hfStatus").textContent = "Conexao HF ativa. Agora voce pode carregar modelos privados.";
+    }
+
+    async function disconnectHf() {
+        const body = new URLSearchParams({ token: "" });
+        await fetch("/api/hf-connect/", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-CSRFToken": getCookie("csrftoken"),
+            },
+            body,
+        });
+        await loadHfAuthStatus();
+        document.getElementById("hfStatus").textContent = "Conexao HF removida.";
     }
 
     function useSelectedHfModel() {
@@ -501,6 +601,7 @@
         updateStreamDelayFromConfig(data.config || {});
         statusEl.textContent = "Configuracao aplicada com sucesso.";
         await loadModelConfig();
+        await refreshModelHealth();
     }
 
     async function loadLineConfig() {
@@ -571,12 +672,89 @@
     }
 
     async function refreshCounters() {
+        if (!appState.running || appState.countersInFlight) {
+            return;
+        }
+        appState.countersInFlight = true;
         try {
             const response = await fetch("/api/counters/");
             const data = await response.json();
             renderCounters(data);
         } catch (error) {
             console.error("Falha ao atualizar contadores:", error);
+        } finally {
+            appState.countersInFlight = false;
+        }
+    }
+
+    function applyModelHealthUI(data) {
+        const badge = document.getElementById("modelHealthBadge");
+        const modelEl = document.getElementById("modelHealthModel");
+        const text = document.getElementById("modelHealthText");
+        const health = toStr(data?.health, "warming_up");
+        const provider = toStr(data?.model_provider, "-");
+        const source = toStr(data?.model_source, "-");
+        modelEl.textContent = `Modelo: ${provider} | ${source}`;
+
+        if (health === "ok") {
+            badge.textContent = "Ativo";
+            badge.style.background = "#123723";
+            badge.style.borderColor = "#2f9e44";
+            badge.style.color = "#b2f2bb";
+            text.textContent = "Inferencia em tempo real funcionando.";
+            return;
+        }
+        if (health === "stale") {
+            badge.textContent = "Sem Atualizacao";
+            badge.style.background = "#3b2b12";
+            badge.style.borderColor = "#f08c00";
+            badge.style.color = "#ffe8cc";
+            text.textContent = "Modelo carregado, mas sem inferencia recente.";
+            return;
+        }
+        if (health === "camera_error") {
+            badge.textContent = "Falha Camera";
+            badge.style.background = "#3b1b1b";
+            badge.style.borderColor = "#c92a2a";
+            badge.style.color = "#ffc9c9";
+            text.textContent = "Sem frames recentes da fonte de video.";
+            return;
+        }
+        if (health === "inference_error") {
+            badge.textContent = "Erro Inferencia";
+            badge.style.background = "#3b1b1b";
+            badge.style.borderColor = "#c92a2a";
+            badge.style.color = "#ffc9c9";
+            text.textContent = toStr(data?.last_status_message, "Erro ao inferir no modelo.");
+            return;
+        }
+
+        badge.textContent = "Inicializando";
+        badge.style.background = "#13243a";
+        badge.style.borderColor = "#34506f";
+        badge.style.color = "#cfe2ff";
+        text.textContent = toStr(data?.last_status_message, "Aguardando primeira inferencia.");
+    }
+
+    async function refreshModelHealth() {
+        if (!appState.running || appState.healthInFlight) {
+            return;
+        }
+        appState.healthInFlight = true;
+        try {
+            const response = await fetch("/api/model-health/");
+            const data = await response.json();
+            applyModelHealthUI(data);
+        } catch (error) {
+            const badge = document.getElementById("modelHealthBadge");
+            const text = document.getElementById("modelHealthText");
+            badge.textContent = "Offline";
+            badge.style.background = "#3b1b1b";
+            badge.style.borderColor = "#c92a2a";
+            badge.style.color = "#ffc9c9";
+            text.textContent = "Nao foi possivel consultar status do modelo.";
+        } finally {
+            appState.healthInFlight = false;
         }
     }
 
@@ -604,7 +782,10 @@
         const ctx = canvas.getContext("2d");
         const statusEl = document.getElementById("streamStatus");
 
-        while (true) {
+        while (appState.running) {
+            if (!document.body.contains(canvas)) {
+                break;
+            }
             try {
                 const blob = await getFrameBlob();
                 const bitmap = await createImageBitmap(blob);
@@ -628,6 +809,10 @@
 
     function bindCanvasSelection() {
         const canvas = document.getElementById("liveCanvas");
+        if (canvas.dataset.boundSelection === "1") {
+            return;
+        }
+        canvas.dataset.boundSelection = "1";
         const roiStatus = document.getElementById("roiStatus");
         const streamStatus = document.getElementById("streamStatus");
 
@@ -722,28 +907,33 @@
         document.getElementById("roiStatus").textContent = "Area aplicada com sucesso.";
     }
 
-    setInterval(refreshCounters, 700);
+    appState.countersIntervalId = setInterval(refreshCounters, 700);
+    appState.healthIntervalId = setInterval(refreshModelHealth, 1200);
     refreshCounters();
+    refreshModelHealth();
     loadSources();
     loadModelConfig();
+    loadHfAuthStatus();
     loadLineConfig();
     searchHfModels();
     bindCanvasSelection();
     startCanvasStream();
 
-    document.getElementById("applySource").addEventListener("click", applySelectedSource);
-    document.getElementById("applyLineConfig").addEventListener("click", applyLineConfig);
-    document.getElementById("applyModelConfig").addEventListener("click", () => applyModelConfig());
-    document.getElementById("vehiclePreset").addEventListener("click", () => applyModelConfig({ vehicle_focus: "true" }));
-    document.getElementById("searchHfModels").addEventListener("click", searchHfModels);
-    document.getElementById("useHfSelected").addEventListener("click", useSelectedHfModel);
-    document.getElementById("useCanvasSelection").addEventListener("click", applyCanvasSelectionToForm);
-    document.getElementById("clearCanvasSelection").addEventListener("click", clearCanvasSelection);
-    document.getElementById("startDrawRoi").addEventListener("click", startRoiDrawMode);
-    document.getElementById("saveDrawRoi").addEventListener("click", saveDrawRoiAndApply);
-    document.getElementById("cancelDrawRoi").addEventListener("click", clearCanvasSelection);
-    document.getElementById("linePosition").addEventListener("input", (event) => {
+    document.getElementById("applySource").onclick = applySelectedSource;
+    document.getElementById("applyLineConfig").onclick = applyLineConfig;
+    document.getElementById("applyModelConfig").onclick = () => applyModelConfig();
+    document.getElementById("vehiclePreset").onclick = () => applyModelConfig({ vehicle_focus: "true" });
+    document.getElementById("searchHfModels").onclick = searchHfModels;
+    document.getElementById("useHfSelected").onclick = useSelectedHfModel;
+    document.getElementById("connectHfBtn").onclick = connectHf;
+    document.getElementById("disconnectHfBtn").onclick = disconnectHf;
+    document.getElementById("useCanvasSelection").onclick = applyCanvasSelectionToForm;
+    document.getElementById("clearCanvasSelection").onclick = clearCanvasSelection;
+    document.getElementById("startDrawRoi").onclick = startRoiDrawMode;
+    document.getElementById("saveDrawRoi").onclick = saveDrawRoiAndApply;
+    document.getElementById("cancelDrawRoi").onclick = clearCanvasSelection;
+    document.getElementById("linePosition").oninput = (event) => {
         document.getElementById("linePositionLabel").textContent = `${event.target.value}%`;
-    });
+    };
 </script>
 {% endblock %}

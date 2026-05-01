@@ -1,4 +1,5 @@
 import atexit
+import logging
 import time
 
 from django.conf import settings
@@ -10,6 +11,8 @@ from django.views.decorators.http import require_POST
 
 from detector.models import DetectionLog
 from detector.services.video_processor import VideoProcessor
+
+logger = logging.getLogger(__name__)
 
 _processor = VideoProcessor(source=settings.VIDEO_SOURCE)
 atexit.register(_processor.stop)
@@ -70,6 +73,27 @@ def model_config_api(request):
 
 
 @login_required
+def model_health_api(request):
+    return JsonResponse(_processor.get_model_health())
+
+
+@login_required
+def hf_auth_status_api(request):
+    return JsonResponse(_processor.get_hf_auth_status())
+
+
+@login_required
+@require_POST
+def hf_connect_api(request):
+    token = request.POST.get("token", "")
+    try:
+        status = _processor.set_hf_token(token)
+        return JsonResponse({"ok": True, "status": status})
+    except ValueError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@login_required
 def hf_models_api(request):
     query = request.GET.get("q", "yolo")
     limit_raw = request.GET.get("limit", "20")
@@ -78,7 +102,7 @@ def hf_models_api(request):
     except ValueError:
         limit = 20
 
-    models, warning = VideoProcessor.list_hf_detection_models(query=query, limit=limit)
+    models, warning = _processor.list_hf_detection_models(query=query, limit=limit)
     payload = {"models": models}
     if warning:
         payload["warning"] = warning
@@ -146,8 +170,9 @@ def set_model_config_api(request):
         return JsonResponse({"ok": True, "config": config})
     except ValueError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
-    except Exception:
-        return JsonResponse({"error": "Falha interna ao aplicar configuracao do modelo."}, status=500)
+    except Exception as exc:
+        logger.exception("Erro inesperado ao aplicar configuracao do modelo")
+        return JsonResponse({"error": f"Falha interna ao aplicar configuracao do modelo: {exc}"}, status=500)
 
 
 @login_required

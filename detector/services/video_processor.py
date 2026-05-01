@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
+import os
 import threading
+import time
 from collections import defaultdict
 from typing import Dict, Optional, Tuple, List
 
@@ -107,6 +109,8 @@ class VideoProcessor:
         self.model_source = model_path
         self.hf_repo_id = ""
         self.hf_filename = ""
+        self.hf_token = ""
+        self.hf_user = ""
         self.iou_threshold = 0.5
         self.imgsz = 640
         self.target_camera_fps = 30
@@ -146,10 +150,41 @@ class VideoProcessor:
         self.line_orientation = "horizontal"
         self.line_position_ratio = 0.5
         self.last_status_message = "Inicializando detector..."
+        self.last_inference_ok = False
+        self.last_inference_ts = 0.0
+        self.last_inference_error = ""
+        self.last_frame_ts = 0.0
         self.log_all_detections = True
         self.log_counter_events = True
         self.class_detect_counts: Dict[str, int] = defaultdict(int)
         self.id_logged_detection: set[int] = set()
+
+    def get_model_health(self) -> Dict[str, object]:
+        with self.lock:
+            now = time.time()
+            seconds_since_inference = (now - self.last_inference_ts) if self.last_inference_ts > 0 else None
+            seconds_since_frame = (now - self.last_frame_ts) if self.last_frame_ts > 0 else None
+            health = "warming_up"
+            if self.last_inference_ok:
+                if seconds_since_inference is not None and seconds_since_inference <= 3.0:
+                    health = "ok"
+                else:
+                    health = "stale"
+            elif self.last_inference_error:
+                health = "inference_error"
+            elif seconds_since_frame is not None and seconds_since_frame > 3.0:
+                health = "camera_error"
+
+            return {
+                "health": health,
+                "model_provider": self.model_provider,
+                "model_source": self.model_source,
+                "last_status_message": self.last_status_message,
+                "last_inference_ok": self.last_inference_ok,
+                "last_inference_error": self.last_inference_error,
+                "seconds_since_inference": seconds_since_inference,
+                "seconds_since_frame": seconds_since_frame,
+            }
 
     def _apply_capture_settings(self, cap):
         if cap is None:
@@ -298,8 +333,42 @@ class VideoProcessor:
         ids = [int(idx) for idx, name in iterable if str(name).lower() in wanted]
         return ids if ids else None
 
-    @staticmethod
-    def list_hf_detection_models(query: str = "yolo", limit: int = 20):
+    def get_hf_auth_status(self) -> Dict[str, str | bool]:
+        with self.lock:
+            return {
+                "connected": bool(self.hf_token),
+                "user": self.hf_user,
+            }
+
+    def set_hf_token(self, token: str) -> Dict[str, str | bool]:
+        clean = (token or "").strip()
+        with self.lock:
+            if not clean:
+                self.hf_token = ""
+                self.hf_user = ""
+                os.environ.pop("HF_TOKEN", None)
+                os.environ.pop("HUGGINGFACEHUB_API_TOKEN", None)
+                return {"connected": False, "user": ""}
+
+        try:
+            from huggingface_hub import HfApi
+        except Exception as exc:
+            raise ValueError("Pacote huggingface_hub nao instalado.") from exc
+
+        try:
+            profile = HfApi().whoami(token=clean)
+        except Exception as exc:
+            raise ValueError(f"Token Hugging Face invalido: {exc}") from exc
+
+        username = str(profile.get("name") or profile.get("fullname") or profile.get("email") or "conectado")
+        with self.lock:
+            self.hf_token = clean
+            self.hf_user = username
+            os.environ["HF_TOKEN"] = clean
+            os.environ["HUGGINGFACEHUB_API_TOKEN"] = clean
+            return {"connected": True, "user": self.hf_user}
+
+    def list_hf_detection_models(self, query: str = "yolo", limit: int = 20):
         normalized_query = (query or "yolo").strip() or "yolo"
         safe_limit = max(5, min(40, int(limit)))
 
@@ -322,14 +391,26 @@ class VideoProcessor:
         error_message = ""
         try:
             api = HfApi()
-            candidates = api.list_models(
-                search=normalized_query,
-                filter="object-detection",
-                sort="downloads",
-                direction=-1,
-                limit=safe_limit,
-                full=True,
-            )
+            try:
+                candidates = api.list_models(
+                    search=normalized_query,
+                    filter="object-detection",
+                    sort="downloads",
+                    direction=-1,
+                    limit=safe_limit,
+                    full=True,
+                    token=(self.hf_token or None),
+                )
+            except TypeError:
+                # Compatibilidade com versoes do huggingface_hub sem parametro `direction`.
+                candidates = api.list_models(
+                    search=normalized_query,
+                    filter="object-detection",
+                    sort="downloads",
+                    limit=safe_limit,
+                    full=True,
+                    token=(self.hf_token or None),
+                )
             for model in candidates:
                 repo_id = str(getattr(model, "id", "") or "").strip()
                 if not repo_id:
@@ -360,8 +441,8 @@ class VideoProcessor:
                         "source": "huggingface",
                     }
                 )
-        except Exception:
-            error_message = "Falha ao buscar no Hugging Face; exibindo presets locais."
+        except Exception as exc:
+            error_message = f"Falha ao buscar no Hugging Face ({exc}); exibindo presets locais."
 
         if not models:
             for item in VideoProcessor.HF_DETECTION_PRESETS[:safe_limit]:
@@ -398,24 +479,47 @@ class VideoProcessor:
 
             filename = (hf_filename or "").strip()
             if not filename:
-                files = list_repo_files(repo_id=model_source, repo_type="model")
+                try:
+                    files = list_repo_files(repo_id=model_source, repo_type="model", token=(self.hf_token or None))
+                except Exception as exc:
+                    raise ValueError(f"Falha ao listar arquivos do repo HF '{model_source}': {exc}") from exc
                 pt_files = [item for item in files if item.endswith(".pt")]
                 if not pt_files:
                     raise ValueError("Repositorio sem arquivo .pt para YOLO.")
                 filename = pt_files[0]
 
-            resolved_path = hf_hub_download(
-                repo_id=model_source,
-                filename=filename,
-                repo_type="model",
-            )
-            loaded_model = YOLO(resolved_path)
+            try:
+                resolved_path = hf_hub_download(
+                    repo_id=model_source,
+                    filename=filename,
+                    repo_type="model",
+                    token=(self.hf_token or None),
+                )
+                loaded_model = YOLO(resolved_path)
+            except Exception as exc:
+                if "A2C2f" in str(exc):
+                    raise ValueError(
+                        "Modelo exige uma versao mais nova do Ultralytics (camada A2C2f). "
+                        "Atualize para ultralytics>=8.4.x e reinicie o servidor."
+                    ) from exc
+                raise ValueError(
+                    f"Falha ao carregar modelo HF '{model_source}/{filename}': {exc}. "
+                    "Se o repo for privado/gated, conecte o token HF no painel."
+                ) from exc
             return loaded_model, provider, model_source, filename
 
         if not model_source:
             model_source = "yolov8n.pt"
 
-        loaded_model = YOLO(model_source)
+        try:
+            loaded_model = YOLO(model_source)
+        except Exception as exc:
+            if "A2C2f" in str(exc):
+                raise ValueError(
+                    "Modelo exige uma versao mais nova do Ultralytics (camada A2C2f). "
+                    "Atualize para ultralytics>=8.4.x e reinicie o servidor."
+                ) from exc
+            raise ValueError(f"Falha ao carregar modelo '{model_source}': {exc}") from exc
         return loaded_model, "ultralytics", model_source, ""
 
     def get_runtime_config(self) -> Dict[str, object]:
@@ -429,6 +533,8 @@ class VideoProcessor:
                 "model_source": self.model_source,
                 "hf_repo_id": self.hf_repo_id,
                 "hf_filename": self.hf_filename,
+                "hf_connected": bool(self.hf_token),
+                "hf_user": self.hf_user,
                 "confidence": self.confidence,
                 "iou": self.iou_threshold,
                 "imgsz": self.imgsz,
@@ -487,23 +593,51 @@ class VideoProcessor:
         with self.lock:
             if provider is not None:
                 provider_name = (provider or "ultralytics").strip().lower()
-                source_value = (hf_repo_id if provider_name == "huggingface" else model_source) or self.model_source
-                model, resolved_provider, resolved_source, resolved_hf_filename = self._load_model_from_source(
-                    provider_name,
-                    source_value,
-                    hf_filename or self.hf_filename,
-                )
-                self.model = model
-                self.class_names = self.model.names
-                self.model_provider = resolved_provider
-                if resolved_provider == "huggingface":
-                    self.hf_repo_id = resolved_source
-                    self.hf_filename = resolved_hf_filename
-                    self.model_source = f"hf:{resolved_source}::{resolved_hf_filename}"
+                should_reload_model = False
+
+                if provider_name == "huggingface":
+                    requested_repo = (hf_repo_id or self.hf_repo_id).strip()
+                    requested_filename = (hf_filename or self.hf_filename).strip()
+                    if not requested_repo:
+                        raise ValueError("Informe o repo_id do Hugging Face.")
+                    should_reload_model = (
+                        self.model_provider != "huggingface"
+                        or requested_repo != self.hf_repo_id
+                        or requested_filename != self.hf_filename
+                    )
+                    if should_reload_model:
+                        model, resolved_provider, resolved_source, resolved_hf_filename = self._load_model_from_source(
+                            provider_name,
+                            requested_repo,
+                            requested_filename,
+                        )
+                        self.model = model
+                        self.class_names = self.model.names
+                        self.model_provider = resolved_provider
+                        self.hf_repo_id = resolved_source
+                        self.hf_filename = resolved_hf_filename
+                        self.model_source = f"hf:{resolved_source}::{resolved_hf_filename}"
                 else:
-                    self.hf_repo_id = ""
-                    self.hf_filename = ""
-                    self.model_source = resolved_source
+                    requested_source = (model_source or "").strip()
+                    if not requested_source:
+                        # Se antes era HF e voltou para Ultralytics sem especificar, volta ao padrao.
+                        requested_source = "yolov8n.pt" if self.model_provider == "huggingface" else self.model_source
+                    should_reload_model = (
+                        self.model_provider != "ultralytics"
+                        or requested_source != self.model_source
+                    )
+                    if should_reload_model:
+                        model, resolved_provider, resolved_source, resolved_hf_filename = self._load_model_from_source(
+                            "ultralytics",
+                            requested_source,
+                            "",
+                        )
+                        self.model = model
+                        self.class_names = self.model.names
+                        self.model_provider = resolved_provider
+                        self.hf_repo_id = ""
+                        self.hf_filename = resolved_hf_filename
+                        self.model_source = resolved_source
 
             if confidence is not None and str(confidence).strip() != "":
                 self.confidence = min(max(float(confidence), 0.01), 0.99)
@@ -666,14 +800,20 @@ class VideoProcessor:
 
     def process_frame(self):
         if not self.running:
+            self.last_inference_ok = False
             return self._build_status_frame("Processamento encerrado.")
         if not self._reconnect_if_needed():
+            self.last_inference_ok = False
+            self.last_inference_error = "camera_unavailable"
             return self._build_status_frame(self.last_status_message)
 
         ok, frame = self.capture.read()
         if not ok:
             self.last_status_message = "Falha ao capturar frame da camera."
+            self.last_inference_ok = False
+            self.last_inference_error = "camera_read_failed"
             return self._build_status_frame(self.last_status_message)
+        self.last_frame_ts = time.time()
 
         original_frame = frame
         display_frame = original_frame
@@ -732,6 +872,8 @@ class VideoProcessor:
         except Exception:
             # Evita quebrar a stream caso o rastreador/inferencia falhe momentaneamente.
             self.last_status_message = "Erro temporario na inferencia; tentando recuperar..."
+            self.last_inference_ok = False
+            self.last_inference_error = "inference_exception"
             cv2.putText(
                 display_frame,
                 self.last_status_message,
@@ -742,6 +884,9 @@ class VideoProcessor:
                 2,
             )
             return display_frame
+        self.last_inference_ok = True
+        self.last_inference_error = ""
+        self.last_inference_ts = time.time()
 
         result = results[0]
         if result.boxes is not None and result.boxes.id is not None:
